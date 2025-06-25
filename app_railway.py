@@ -33,31 +33,31 @@ def create_youtube_object(url):
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
     ]
     
-    # Estratégias de tentativa
+    # Estratégias de tentativa (corrigidas)
     strategies = [
-        # Estratégia 1: Cliente WEB com user agent
-        lambda: YouTube(url, client='WEB', user_agent=random.choice(user_agents)),
-        
-        # Estratégia 2: Cliente ANDROID
+        # Estratégia 1: Cliente ANDROID (mais confiável)
         lambda: YouTube(url, client='ANDROID'),
         
-        # Estratégia 3: Cliente IOS
+        # Estratégia 2: Cliente IOS
         lambda: YouTube(url, client='IOS'),
         
-        # Estratégia 4: Configuração padrão com user agent
-        lambda: YouTube(url, user_agent=random.choice(user_agents)),
+        # Estratégia 3: Cliente WEB padrão
+        lambda: YouTube(url, client='WEB'),
         
-        # Estratégia 5: Com use_po_token
-        lambda: YouTube(url, use_po_token=True, client='WEB'),
-        
-        # Estratégia 6: Configuração básica
-        lambda: YouTube(url),
-        
-        # Estratégia 7: Cliente TV_EMBED
+        # Estratégia 4: Cliente TV_EMBED
         lambda: YouTube(url, client='TV_EMBED'),
         
-        # Estratégia 8: Cliente WEB_EMBED
-        lambda: YouTube(url, client='WEB_EMBED')
+        # Estratégia 5: Cliente WEB_EMBED
+        lambda: YouTube(url, client='WEB_EMBED'),
+        
+        # Estratégia 6: Com use_po_token
+        lambda: YouTube(url, use_po_token=True),
+        
+        # Estratégia 7: Configuração básica
+        lambda: YouTube(url),
+        
+        # Estratégia 8: Cliente ANDROID com bypass
+        lambda: YouTube(url, client='ANDROID_EMBEDDED'),
     ]
     
     # Tenta cada estratégia
@@ -67,7 +67,7 @@ def create_youtube_object(url):
             
             # Adiciona delay para evitar rate limiting
             if i > 0:
-                time.sleep(random.uniform(0.5, 2.0))
+                time.sleep(random.uniform(1.0, 3.0))
             
             yt = strategy()
             
@@ -75,15 +75,30 @@ def create_youtube_object(url):
             _ = yt.title  # Força o carregamento dos dados
             _ = yt.length
             
+            # Testa se consegue obter streams (importante para evitar 403 no download)
+            streams = yt.streams.filter(progressive=True).first()
+            if not streams:
+                streams = yt.streams.first()
+            
+            if not streams:
+                raise Exception("Nenhum stream disponível")
+            
             print(f"✓ Sucesso com estratégia {i+1}")
             return yt
             
         except Exception as e:
-            print(f"✗ Estratégia {i+1} falhou: {str(e)[:100]}")
+            error_msg = str(e)
+            print(f"✗ Estratégia {i+1} falhou: {error_msg[:100]}")
+            
+            # Se é erro 403, tenta estratégias adicionais
+            if "403" in error_msg or "Forbidden" in error_msg:
+                print("  → Detectado erro 403, aplicando delay adicional...")
+                time.sleep(random.uniform(2.0, 5.0))
+            
             continue
     
     # Se todas as estratégias falharam
-    raise Exception("Todas as estratégias falharam. YouTube pode estar bloqueando o acesso. Tente novamente em alguns minutos.")
+    raise Exception("Todas as estratégias falharam. YouTube pode estar bloqueando o acesso. Tente:\n1. Aguardar alguns minutos\n2. Usar uma VPN\n3. Tentar outro vídeo")
 
 def check_ffmpeg():
     """Verifica se FFmpeg está disponível"""
@@ -322,38 +337,110 @@ def download_video_thread(download_id, url, resolution):
         # Atualiza status
         download_status[download_id]['status'] = 'downloading'
         
-        # Cria objeto YouTube com anti-bot
-        yt = create_youtube_object(url)
+        # Cria objeto YouTube com anti-bot - com retry para 403
+        retry_count = 3
+        yt = None
+        
+        for attempt in range(retry_count):
+            try:
+                yt = create_youtube_object(url)
+                break
+            except Exception as e:
+                if "403" in str(e) or "Forbidden" in str(e):
+                    if attempt < retry_count - 1:
+                        print(f"Tentativa {attempt + 1} falhou com 403, tentando novamente em 5s...")
+                        time.sleep(5)
+                        continue
+                    else:
+                        raise Exception(f"Erro 403 persistente após {retry_count} tentativas. YouTube pode estar bloqueando o acesso.")
+                else:
+                    raise e
+        
+        if not yt:
+            raise Exception("Não foi possível criar objeto YouTube")
         
         # Nome seguro do arquivo
         safe_filename = "".join(c for c in yt.title if c.isalnum() or c in (' ', '-', '_')).rstrip()
         
         if resolution == 'audio':
             # Download apenas áudio
+            print("Baixando stream de áudio...")
             stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
+            if not stream:
+                raise Exception("Stream de áudio não encontrado")
+            
             filename = f"{safe_filename}_audio.mp4"
             filepath = os.path.join(DOWNLOAD_DIR, filename)
             
-            stream.download(output_path=DOWNLOAD_DIR, filename=filename)
+            # Download com retry para 403
+            for attempt in range(3):
+                try:
+                    stream.download(output_path=DOWNLOAD_DIR, filename=filename)
+                    break
+                except Exception as e:
+                    if "403" in str(e) and attempt < 2:
+                        print(f"Erro 403 no download de áudio, tentativa {attempt + 1}/3")
+                        time.sleep(3)
+                        continue
+                    else:
+                        raise e
             
         elif resolution in ['1080p', '720p'] and check_ffmpeg():
             # Download HD com FFmpeg
-            video_stream = yt.streams.filter(adaptive=True, file_extension='mp4', res=resolution, only_video=True).first()
-            audio_stream = yt.streams.filter(adaptive=True, file_extension='mp4', only_audio=True).order_by('abr').desc().first()
+            print(f"Baixando stream HD {resolution}...")
+            
+            # Busca streams com retry
+            video_stream = None
+            audio_stream = None
+            
+            for attempt in range(3):
+                try:
+                    video_stream = yt.streams.filter(adaptive=True, file_extension='mp4', res=resolution, only_video=True).first()
+                    audio_stream = yt.streams.filter(adaptive=True, file_extension='mp4', only_audio=True).order_by('abr').desc().first()
+                    break
+                except Exception as e:
+                    if "403" in str(e) and attempt < 2:
+                        print(f"Erro 403 ao buscar streams, tentativa {attempt + 1}/3")
+                        time.sleep(3)
+                        # Recria objeto YouTube
+                        yt = create_youtube_object(url)
+                        continue
+                    else:
+                        raise e
             
             if not video_stream or not audio_stream:
-                raise Exception(f"Stream {resolution} não encontrado")
+                raise Exception(f"Stream {resolution} não encontrado após múltiplas tentativas")
             
             # Arquivos temporários
             video_temp = os.path.join(DOWNLOAD_DIR, f"temp_video_{download_id}.mp4")
             audio_temp = os.path.join(DOWNLOAD_DIR, f"temp_audio_{download_id}.mp4")
             
-            # Download streams
+            # Download streams com retry
             download_status[download_id]['status'] = 'downloading_video'
-            video_stream.download(output_path=DOWNLOAD_DIR, filename=f"temp_video_{download_id}.mp4")
+            for attempt in range(3):
+                try:
+                    video_stream.download(output_path=DOWNLOAD_DIR, filename=f"temp_video_{download_id}.mp4")
+                    break
+                except Exception as e:
+                    if "403" in str(e) and attempt < 2:
+                        print(f"Erro 403 no download de vídeo, tentativa {attempt + 1}/3")
+                        time.sleep(5)
+                        continue
+                    else:
+                        raise e
             
             download_status[download_id]['status'] = 'downloading_audio'
-            audio_stream.download(output_path=DOWNLOAD_DIR, filename=f"temp_audio_{download_id}.mp4")
+            for attempt in range(3):
+                try:
+                    audio_stream.download(output_path=DOWNLOAD_DIR, filename=f"temp_audio_{download_id}.mp4")
+                    break
+                except Exception as e:
+                    if "403" in str(e) and attempt < 2:
+                        print(f"Erro 403 no download de áudio, tentativa {attempt + 1}/3")
+                        time.sleep(5)
+                        continue
+                    else:
+                        raise e
             
             # Combina com FFmpeg
             download_status[download_id]['status'] = 'processing'
@@ -371,19 +458,43 @@ def download_video_thread(download_id, url, resolution):
             subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
             
             # Remove arquivos temporários
-            os.remove(video_temp)
-            os.remove(audio_temp)
+            if os.path.exists(video_temp):
+                os.remove(video_temp)
+            if os.path.exists(audio_temp):
+                os.remove(audio_temp)
             
         else:
             # Download progressivo
+            print(f"Baixando stream progressivo {resolution}...")
+            
+            # Busca stream com fallback
             stream = yt.streams.filter(progressive=True, file_extension='mp4', res=resolution).first()
             if not stream:
-                raise Exception(f"Stream {resolution} não encontrado")
+                # Fallback para qualquer stream progressivo
+                stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+                if not stream:
+                    raise Exception(f"Nenhum stream progressivo disponível")
             
-            filename = f"{safe_filename}_{resolution}.mp4"
+            filename = f"{safe_filename}_{stream.resolution}.mp4"
             filepath = os.path.join(DOWNLOAD_DIR, filename)
             
-            stream.download(output_path=DOWNLOAD_DIR, filename=filename)
+            # Download com retry para 403
+            for attempt in range(3):
+                try:
+                    stream.download(output_path=DOWNLOAD_DIR, filename=filename)
+                    break
+                except Exception as e:
+                    if "403" in str(e) and attempt < 2:
+                        print(f"Erro 403 no download progressivo, tentativa {attempt + 1}/3")
+                        time.sleep(5)
+                        # Tenta recriar o objeto YouTube
+                        yt = create_youtube_object(url)
+                        stream = yt.streams.filter(progressive=True, file_extension='mp4', res=resolution).first()
+                        if not stream:
+                            stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+                        continue
+                    else:
+                        raise e
         
         # Sucesso
         download_status[download_id].update({
@@ -393,10 +504,23 @@ def download_video_thread(download_id, url, resolution):
             'filepath': filepath
         })
         
+        print(f"✓ Download concluído: {filename}")
+        
     except Exception as e:
+        error_msg = str(e)
+        print(f"✗ Erro no download: {error_msg}")
+        
+        # Mensagens de erro mais informativas
+        if "403" in error_msg or "Forbidden" in error_msg:
+            error_msg = "YouTube está bloqueando o download. Tente aguardar alguns minutos ou usar uma VPN."
+        elif "404" in error_msg:
+            error_msg = "Vídeo não encontrado ou foi removido."
+        elif "regex_search" in error_msg:
+            error_msg = "Erro ao processar dados do YouTube. Pode ser um problema temporário."
+        
         download_status[download_id].update({
             'status': 'error',
-            'error': str(e)
+            'error': error_msg
         })
 
 @app.route('/download_status/<download_id>')
