@@ -583,7 +583,7 @@
             downloadBtn.disabled = true;
 
             try {
-                const response = await fetch('/download', {
+                const response = await fetch('/start_download', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
@@ -614,19 +614,42 @@
         async function pollDownloadStatus(downloadId) {
             const pollInterval = setInterval(async () => {
                 try {
-                    const response = await fetch(`/status/${downloadId}`);
+                    const response = await fetch(`/download_status/${downloadId}`);
                     const status = await response.json();
 
-                    updateProgress(status.progress, status.message);
-
-                    if (status.status === 'concluido') {
+                    if (status.status === 'starting') {
+                        updateProgress(5, 'Iniciando download...');
+                    } else if (status.status === 'downloading') {
+                        updateProgress(30, 'Baixando vídeo...');
+                    } else if (status.status === 'downloading_video') {
+                        updateProgress(40, 'Baixando vídeo HD...');
+                    } else if (status.status === 'downloading_audio') {
+                        updateProgress(60, 'Baixando áudio...');
+                    } else if (status.status === 'processing') {
+                        updateProgress(80, 'Processando e combinando arquivos...');
+                    } else if (status.status === 'completed') {
                         clearInterval(pollInterval);
-                        showSuccess('Download concluído! <a href="/download_file/' + downloadId + '" style="color: #155724; text-decoration: underline;">Clique aqui para baixar</a>');
+                        updateProgress(100, 'Download concluído!');
+                        
+                        // Verifica se houve fallback
+                        let successMessage = 'Download concluído! <a href="/download_file/' + downloadId + '" style="color: #155724; text-decoration: underline;">Clique aqui para baixar</a>';
+                        
+                        if (status.final_resolution && status.final_resolution !== selectedQuality) {
+                            successMessage = `
+                                <div style="margin-bottom: 10px;">
+                                    <strong>ℹ️ Informação:</strong> HD foi bloqueado pelo YouTube.<br>
+                                    <strong>Qualidade baixada:</strong> ${status.final_resolution}
+                                </div>
+                                ${successMessage}
+                            `;
+                        }
+                        
+                        showSuccess(successMessage);
                         downloadBtn.disabled = false;
                         showProgress(false);
-                    } else if (status.status === 'erro') {
+                    } else if (status.status === 'error') {
                         clearInterval(pollInterval);
-                        showError(status.message);
+                        showError(status.error || 'Erro durante o download');
                         downloadBtn.disabled = false;
                         showProgress(false);
                     }
