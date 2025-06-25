@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader - Vercel</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+            color: white;
+            padding: 40px 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .main-content {
+            padding: 40px 30px;
+        }
+
+        .input-section {
+            margin-bottom: 30px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-group label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+            font-size: 1rem;
+        }
+
+        .url-input {
+            width: 100%;
+            padding: 15px 20px;
+            border: 2px solid #e1e8ed;
+            border-radius: 12px;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: #f8f9fa;
+        }
+
+        .url-input:focus {
+            outline: none;
+            border-color: #ff416c;
+            background: white;
+            box-shadow: 0 0 0 3px rgba(255, 65, 108, 0.1);
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 12px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            color: white;
+        }
+
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(17, 153, 142, 0.3);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .video-info {
+            display: none;
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 25px;
+            margin: 20px 0;
+            border-left: 5px solid #ff416c;
+        }
+
+        .video-preview {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            align-items: flex-start;
+        }
+
+        .video-thumbnail {
+            width: 200px;
+            height: 113px;
+            border-radius: 12px;
+            object-fit: cover;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
+        }
+
+        .video-details h3 {
+            color: #333;
+            font-size: 1.3rem;
+            margin-bottom: 10px;
+            line-height: 1.4;
+        }
+
+        .video-meta {
+            color: #666;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+
+        .video-meta span {
+            display: inline-block;
+            margin-right: 15px;
+        }
+
+        .video-meta i {
+            margin-right: 5px;
+            color: #ff416c;
+        }
+
+        .quality-selector {
+            margin: 20px 0;
+        }
+
+        .quality-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+
+        .quality-option {
+            padding: 15px;
+            border: 2px solid #e1e8ed;
+            border-radius: 12px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-align: center;
+            background: white;
+        }
+
+        .quality-option:hover {
+            border-color: #ff416c;
+            background: rgba(255, 65, 108, 0.05);
+        }
+
+        .quality-option.selected {
+            border-color: #ff416c;
+            background: rgba(255, 65, 108, 0.1);
+            color: #ff416c;
+            font-weight: 600;
+        }
+
+        .quality-option .quality-label {
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .quality-option .quality-size {
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            display: none;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #ff416c;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .success-message {
+            display: none;
+            background: #d4edda;
+            color: #155724;
+            padding: 20px;
+            border-radius: 12px;
+            border-left: 5px solid #28a745;
+            margin: 20px 0;
+        }
+
+        .error-message {
+            display: none;
+            background: #f8d7da;
+            color: #721c24;
+            padding: 20px;
+            border-radius: 12px;
+            border-left: 5px solid #dc3545;
+            margin: 20px 0;
+        }
+
+        .download-section {
+            text-align: center;
+            margin-top: 30px;
+        }
+
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #666;
+            font-size: 0.9rem;
+            border-top: 1px solid #e1e8ed;
+            margin-top: 40px;
+        }
+
+        .warning-box {
+            background: #fff3cd;
+            color: #856404;
+            padding: 15px;
+            border-radius: 12px;
+            border-left: 5px solid #ffc107;
+            margin: 20px 0;
+        }
+
+        @media (max-width: 768px) {
+            .container {
+                margin: 10px;
+                border-radius: 15px;
+            }
+
+            .header {
+                padding: 30px 20px;
+            }
+
+            .header h1 {
+                font-size: 2rem;
+            }
+
+            .main-content {
+                padding: 30px 20px;
+            }
+
+            .video-preview {
+                flex-direction: column;
+                text-align: center;
+            }
+
+            .video-thumbnail {
+                width: 100%;
+                max-width: 300px;
+                height: auto;
+                aspect-ratio: 16/9;
+            }
+
+            .quality-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1><i class="fab fa-youtube"></i> YouTube Downloader</h1>
+            <p>Versão simplificada para Vercel - Downloads até 360p</p>
+        </div>
+
+        <div class="main-content">
+            <!-- Warning -->
+            <div class="warning-box">
+                <i class="fas fa-info-circle"></i>
+                <strong>Versão Vercel:</strong> Esta versão suporta downloads até 360p (sem FFmpeg). Para 1080p HD, use a versão local.
+            </div>
+
+            <!-- Input Section -->
+            <div class="input-section">
+                <div class="input-group">
+                    <label for="youtube-url">
+                        <i class="fas fa-link"></i> URL do YouTube
+                    </label>
+                    <input 
+                        type="url" 
+                        id="youtube-url" 
+                        class="url-input" 
+                        placeholder="Cole aqui a URL do vídeo do YouTube..."
+                    >
+                </div>
+                <button id="analyze-btn" class="btn btn-primary">
+                    <i class="fas fa-search"></i>
+                    Analisar Vídeo
+                </button>
+            </div>
+
+            <!-- Loading -->
+            <div id="loading" class="loading">
+                <div class="spinner"></div>
+                <p>Analisando vídeo...</p>
+            </div>
+
+            <!-- Video Info -->
+            <div id="video-info" class="video-info">
+                <div class="video-preview">
+                    <img id="video-thumbnail" class="video-thumbnail" src="" alt="Thumbnail">
+                    <div class="video-details">
+                        <h3 id="video-title"></h3>
+                        <div class="video-meta">
+                            <span><i class="fas fa-user"></i><span id="video-author"></span></span>
+                            <span><i class="fas fa-clock"></i><span id="video-duration"></span></span>
+                            <span><i class="fas fa-eye"></i><span id="video-views"></span></span>
+                        </div>
+                        <p id="video-description"></p>
+                    </div>
+                </div>
+
+                <div class="quality-selector">
+                    <label><i class="fas fa-video"></i> Escolha a Qualidade:</label>
+                    <div id="quality-options" class="quality-grid">
+                        <!-- Options will be populated by JS -->
+                    </div>
+                </div>
+
+                <div class="download-section">
+                    <button id="download-btn" class="btn btn-success" disabled>
+                        <i class="fas fa-download"></i>
+                        Obter Link de Download
+                    </button>
+                </div>
+            </div>
+
+            <!-- Messages -->
+            <div id="success-message" class="success-message">
+                <i class="fas fa-check-circle"></i>
+                <strong>Sucesso!</strong> <span id="success-text"></span>
+            </div>
+
+            <div id="error-message" class="error-message">
+                <i class="fas fa-exclamation-triangle"></i>
+                <strong>Erro!</strong> <span id="error-text"></span>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p><i class="fas fa-cloud" style="color: #ff416c;"></i> Versão Vercel Serverless</p>
+            <p>Para downloads HD (1080p), use a versão local com FFmpeg</p>
+        </div>
+    </div>
+
+    <script>
+        let selectedQuality = null;
+        let currentVideoInfo = null;
+
+        // Elements
+        const urlInput = document.getElementById('youtube-url');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const loading = document.getElementById('loading');
+        const videoInfo = document.getElementById('video-info');
+        const successMessage = document.getElementById('success-message');
+        const errorMessage = document.getElementById('error-message');
+
+        // Event Listeners
+        analyzeBtn.addEventListener('click', analyzeVideo);
+        downloadBtn.addEventListener('click', getDownloadLink);
+        urlInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                analyzeVideo();
+            }
+        });
+
+        // Analyze Video
+        async function analyzeVideo() {
+            const url = urlInput.value.trim();
+            if (!url) {
+                showError('Por favor, insira uma URL válida');
+                return;
+            }
+
+            hideMessages();
+            showLoading(true);
+            hideVideoInfo();
+
+            try {
+                const response = await fetch('/get_video_info', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ url })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showError(data.error);
+                } else {
+                    currentVideoInfo = data;
+                    displayVideoInfo(data);
+                    showVideoInfo();
+                }
+            } catch (error) {
+                showError('Erro de conexão. Tente novamente.');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // Display Video Info
+        function displayVideoInfo(data) {
+            const { video_info, streams } = data;
+
+            // Basic info
+            document.getElementById('video-thumbnail').src = video_info.thumbnail;
+            document.getElementById('video-title').textContent = video_info.title;
+            document.getElementById('video-author').textContent = video_info.author;
+            document.getElementById('video-duration').textContent = formatDuration(video_info.length);
+            document.getElementById('video-views').textContent = formatNumber(video_info.views);
+            document.getElementById('video-description').textContent = video_info.description || 'Sem descrição';
+
+            // Quality options
+            const qualityContainer = document.getElementById('quality-options');
+            qualityContainer.innerHTML = '';
+
+            streams.forEach(stream => {
+                const option = document.createElement('div');
+                option.className = 'quality-option';
+                option.dataset.resolution = stream.resolution;
+                option.innerHTML = `
+                    <div class="quality-label">${stream.quality}</div>
+                    <div class="quality-size">${stream.size}</div>
+                `;
+                option.addEventListener('click', () => selectQuality(stream.resolution, option));
+                qualityContainer.appendChild(option);
+            });
+        }
+
+        // Select Quality
+        function selectQuality(resolution, element) {
+            // Remove previous selection
+            document.querySelectorAll('.quality-option').forEach(option => {
+                option.classList.remove('selected');
+            });
+
+            // Add selection to clicked element
+            element.classList.add('selected');
+            selectedQuality = resolution;
+            downloadBtn.disabled = false;
+        }
+
+        // Get Download Link
+        async function getDownloadLink() {
+            if (!selectedQuality || !currentVideoInfo) {
+                showError('Selecione uma qualidade primeiro');
+                return;
+            }
+
+            hideMessages();
+            downloadBtn.disabled = true;
+            downloadBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Gerando link...';
+
+            try {
+                const response = await fetch('/get_download_url', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        url: urlInput.value.trim(),
+                        resolution: selectedQuality
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.error) {
+                    showError(data.error);
+                } else {
+                    // Cria link de download
+                    const downloadLink = document.createElement('a');
+                    downloadLink.href = data.download_url;
+                    downloadLink.download = data.filename;
+                    downloadLink.style.display = 'none';
+                    document.body.appendChild(downloadLink);
+                    downloadLink.click();
+                    document.body.removeChild(downloadLink);
+
+                    showSuccess(`Download iniciado! Arquivo: ${data.filename} (${data.size})`);
+                }
+            } catch (error) {
+                showError('Erro de conexão. Tente novamente.');
+            } finally {
+                downloadBtn.disabled = false;
+                downloadBtn.innerHTML = '<i class="fas fa-download"></i> Obter Link de Download';
+            }
+        }
+
+        // Utility Functions
+        function formatDuration(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            if (hours > 0) {
+                return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+            }
+            return `${minutes}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function formatNumber(num) {
+            if (num >= 1000000) {
+                return (num / 1000000).toFixed(1) + 'M';
+            } else if (num >= 1000) {
+                return (num / 1000).toFixed(1) + 'K';
+            }
+            return num.toString();
+        }
+
+        function showLoading(show) {
+            loading.style.display = show ? 'block' : 'none';
+            analyzeBtn.disabled = show;
+        }
+
+        function showVideoInfo() {
+            videoInfo.style.display = 'block';
+        }
+
+        function hideVideoInfo() {
+            videoInfo.style.display = 'none';
+        }
+
+        function showSuccess(message) {
+            document.getElementById('success-text').innerHTML = message;
+            successMessage.style.display = 'block';
+            errorMessage.style.display = 'none';
+        }
+
+        function showError(message) {
+            document.getElementById('error-text').textContent = message;
+            errorMessage.style.display = 'block';
+            successMessage.style.display = 'none';
+        }
+
+        function hideMessages() {
+            successMessage.style.display = 'none';
+            errorMessage.style.display = 'none';
+        }
+    </script>
+</body>
+</html> 
