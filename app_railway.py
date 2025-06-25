@@ -1,5 +1,6 @@
 from flask import Flask, render_template, request, jsonify, send_file
 from pytubefix import YouTube
+from pytubefix.cli import on_progress
 import os
 import tempfile
 import uuid
@@ -19,6 +20,19 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # Status dos downloads
 download_status = {}
+
+def create_youtube_object(url):
+    """Cria objeto YouTube com configurações anti-bot"""
+    try:
+        # Primeira tentativa: com use_po_token
+        return YouTube(url, use_po_token=True)
+    except:
+        try:
+            # Segunda tentativa: sem po_token mas com client web
+            return YouTube(url, client='WEB')
+        except:
+            # Terceira tentativa: configuração padrão
+            return YouTube(url)
 
 def check_ffmpeg():
     """Verifica se FFmpeg está disponível"""
@@ -59,8 +73,8 @@ def get_video_info():
         if not url:
             return jsonify({'error': 'URL é obrigatória'}), 400
         
-        # Cria objeto YouTube
-        yt = YouTube(url)
+        # Cria objeto YouTube com anti-bot
+        yt = create_youtube_object(url)
         
         # Obtém informações básicas
         video_info = {
@@ -160,8 +174,8 @@ def download_video_thread(download_id, url, resolution):
         # Atualiza status
         download_status[download_id]['status'] = 'downloading'
         
-        # Cria objeto YouTube
-        yt = YouTube(url)
+        # Cria objeto YouTube com anti-bot
+        yt = create_youtube_object(url)
         
         # Nome seguro do arquivo
         safe_filename = "".join(c for c in yt.title if c.isalnum() or c in (' ', '-', '_')).rstrip()

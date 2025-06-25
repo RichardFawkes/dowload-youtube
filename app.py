@@ -2,41 +2,59 @@ from flask import Flask, render_template, request, jsonify, send_file
 from pytubefix import YouTube
 from pytubefix.cli import on_progress
 import os
-import subprocess
 import tempfile
 import uuid
-from werkzeug.utils import secure_filename
 import threading
 import time
+import subprocess
+import shutil
 
 app = Flask(__name__)
 
-# Configurações
-DOWNLOAD_FOLDER = 'downloads'
-if not os.path.exists(DOWNLOAD_FOLDER):
-    os.makedirs(DOWNLOAD_FOLDER)
+# Diretório para downloads
+DOWNLOAD_DIR = os.path.join(os.path.dirname(__file__), 'downloads')
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # Status dos downloads
 download_status = {}
 
-def check_ffmpeg():
-    """Verifica se o FFmpeg está disponível"""
+def create_youtube_object(url):
+    """Cria objeto YouTube com configurações anti-bot"""
     try:
-        possible_paths = ['ffmpeg', 'C:\\ffmpeg\\bin\\ffmpeg.exe', 'C:\\Program Files\\FFmpeg\\bin\\ffmpeg.exe']
-        for path in possible_paths:
-            result = subprocess.run([path, '-version'], capture_output=True, check=True, timeout=10)
-            if result.returncode == 0:
-                return path
-        return None
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        return None
+        # Primeira tentativa: com use_po_token
+        return YouTube(url, use_po_token=True)
+    except:
+        try:
+            # Segunda tentativa: sem po_token mas com client web
+            return YouTube(url, client='WEB')
+        except:
+            # Terceira tentativa: configuração padrão
+            return YouTube(url)
 
-def progress_callback(stream, chunk, bytes_remaining):
-    """Callback de progresso para o download"""
-    total_size = stream.filesize
-    bytes_downloaded = total_size - bytes_remaining
-    percentage = (bytes_downloaded / total_size) * 100
-    return percentage
+def check_ffmpeg():
+    """Verifica se FFmpeg está disponível"""
+    try:
+        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+def format_duration(seconds):
+    """Formata duração em segundos para HH:MM:SS"""
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    if hours > 0:
+        return f"{int(hours):02d}:{int(minutes):02d}:{int(secs):02d}"
+    return f"{int(minutes):02d}:{int(secs):02d}"
+
+def format_number(num):
+    """Formata números grandes (views)"""
+    if num >= 1_000_000:
+        return f"{num/1_000_000:.1f}M"
+    elif num >= 1_000:
+        return f"{num/1_000:.1f}K"
+    return str(num)
 
 @app.route('/')
 def index():
@@ -44,7 +62,7 @@ def index():
 
 @app.route('/get_video_info', methods=['POST'])
 def get_video_info():
-    """Obtém informações do vídeo sem baixar"""
+    """Obtém informações do vídeo"""
     try:
         data = request.get_json()
         url = data.get('url', '').strip()
@@ -52,8 +70,8 @@ def get_video_info():
         if not url:
             return jsonify({'error': 'URL é obrigatória'}), 400
         
-        # Cria objeto YouTube
-        yt = YouTube(url)
+        # Cria objeto YouTube com anti-bot
+        yt = create_youtube_object(url)
         
         # Obtém informações básicas
         video_info = {
@@ -65,10 +83,25 @@ def get_video_info():
             'description': yt.description[:200] + '...' if len(yt.description or '') > 200 else yt.description
         }
         
+        # Verifica se FFmpeg está disponível
+        ffmpeg_available = check_ffmpeg()
+        
         # Obtém streams disponíveis
         streams = []
         
-        # Streams progressivos (vídeo + áudio juntos)
+        if ffmpeg_available:
+            # Com FFmpeg: streams adaptivos (HD)
+            video_streams = yt.streams.filter(adaptive=True, file_extension='mp4', only_video=True).order_by('resolution').desc()
+            for stream in video_streams:
+                if stream.resolution in ['1080p', '720p', '480p', '360p']:
+                    streams.append({
+                        'resolution': stream.resolution,
+                        'type': 'adaptive',
+                        'size': f"{stream.filesize / (1024*1024):.1f} MB" if stream.filesize else 'N/A',
+                        'quality': f"{stream.resolution} HD (Vídeo + Áudio)"
+                    })
+        
+        # Streams progressivos (funcionam sem FFmpeg)
         progressive_streams = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc()
         for stream in progressive_streams:
             streams.append({
@@ -78,19 +111,7 @@ def get_video_info():
                 'quality': f"{stream.resolution} (Vídeo + Áudio)"
             })
         
-        # Streams adaptativos (apenas vídeo)
-        if check_ffmpeg():
-            adaptive_video = yt.streams.filter(adaptive=True, only_video=True, file_extension='mp4').order_by('resolution').desc()
-            for stream in adaptive_video:
-                if stream.resolution not in [s['resolution'] for s in streams]:
-                    streams.append({
-                        'resolution': stream.resolution,
-                        'type': 'adaptive',
-                        'size': f"{stream.filesize / (1024*1024):.1f} MB" if stream.filesize else 'N/A',
-                        'quality': f"{stream.resolution} HD (Requer FFmpeg)"
-                    })
-        
-        # Streams de áudio apenas
+        # Stream de áudio apenas
         audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
         if audio_stream:
             streams.append({
@@ -103,14 +124,14 @@ def get_video_info():
         return jsonify({
             'video_info': video_info,
             'streams': streams,
-            'ffmpeg_available': check_ffmpeg() is not None
+            'ffmpeg_available': ffmpeg_available
         })
         
     except Exception as e:
         return jsonify({'error': f'Erro ao obter informações do vídeo: {str(e)}'}), 400
 
-@app.route('/download', methods=['POST'])
-def download_video():
+@app.route('/start_download', methods=['POST'])
+def start_download():
     """Inicia o download do vídeo"""
     try:
         data = request.get_json()
@@ -122,15 +143,20 @@ def download_video():
         
         # Gera ID único para o download
         download_id = str(uuid.uuid4())
+        
+        # Inicializa status
         download_status[download_id] = {
-            'status': 'iniciando',
+            'status': 'starting',
             'progress': 0,
-            'message': 'Iniciando download...',
-            'file_path': None
+            'filename': '',
+            'error': None
         }
         
         # Inicia download em thread separada
-        thread = threading.Thread(target=download_worker, args=(download_id, url, resolution))
+        thread = threading.Thread(
+            target=download_video_thread,
+            args=(download_id, url, resolution)
+        )
         thread.daemon = True
         thread.start()
         
@@ -139,132 +165,137 @@ def download_video():
     except Exception as e:
         return jsonify({'error': f'Erro ao iniciar download: {str(e)}'}), 400
 
-def download_worker(download_id, url, resolution):
-    """Worker para fazer o download em background"""
+def download_video_thread(download_id, url, resolution):
+    """Thread para download do vídeo"""
     try:
-        download_status[download_id]['message'] = 'Conectando ao YouTube...'
+        # Atualiza status
+        download_status[download_id]['status'] = 'downloading'
         
-        # Cria objeto YouTube
-        yt = YouTube(url)
+        # Cria objeto YouTube com anti-bot
+        yt = create_youtube_object(url)
         
         # Nome seguro do arquivo
         safe_filename = "".join(c for c in yt.title if c.isalnum() or c in (' ', '-', '_')).rstrip()
         
-        download_status[download_id]['message'] = 'Obtendo streams...'
-        
         if resolution == 'audio':
             # Download apenas áudio
-            download_status[download_id]['message'] = 'Baixando áudio...'
             stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
-            if stream:
-                file_path = os.path.join(DOWNLOAD_FOLDER, f"{safe_filename}_audio.mp4")
-                stream.download(output_path=DOWNLOAD_FOLDER, filename=f"{safe_filename}_audio.mp4")
-                download_status[download_id] = {
-                    'status': 'concluido',
-                    'progress': 100,
-                    'message': 'Download concluído!',
-                    'file_path': file_path
-                }
-            else:
-                raise Exception("Stream de áudio não encontrado")
-                
+            filename = f"{safe_filename}_audio.mp4"
+            filepath = os.path.join(DOWNLOAD_DIR, filename)
+            
+            stream.download(output_path=DOWNLOAD_DIR, filename=filename)
+            
         elif resolution in ['1080p', '720p'] and check_ffmpeg():
             # Download HD com FFmpeg
-            download_status[download_id]['message'] = 'Baixando vídeo HD...'
-            
-            video_stream = yt.streams.filter(adaptive=True, file_extension='mp4', only_video=True, res=resolution).first()
+            video_stream = yt.streams.filter(adaptive=True, file_extension='mp4', res=resolution, only_video=True).first()
             audio_stream = yt.streams.filter(adaptive=True, file_extension='mp4', only_audio=True).order_by('abr').desc().first()
             
-            if video_stream and audio_stream:
-                # Download vídeo
-                video_temp = os.path.join(DOWNLOAD_FOLDER, f"{download_id}_video.mp4")
-                video_stream.download(output_path=DOWNLOAD_FOLDER, filename=f"{download_id}_video.mp4")
-                
-                download_status[download_id]['message'] = 'Baixando áudio...'
-                download_status[download_id]['progress'] = 50
-                
-                # Download áudio
-                audio_temp = os.path.join(DOWNLOAD_FOLDER, f"{download_id}_audio.mp4")
-                audio_stream.download(output_path=DOWNLOAD_FOLDER, filename=f"{download_id}_audio.mp4")
-                
-                download_status[download_id]['message'] = 'Combinando vídeo e áudio...'
-                download_status[download_id]['progress'] = 75
-                
-                # Combina com FFmpeg
-                output_file = os.path.join(DOWNLOAD_FOLDER, f"{safe_filename}_HD_{resolution}.mp4")
-                ffmpeg_path = check_ffmpeg()
-                
-                cmd = [
-                    ffmpeg_path, 
-                    '-i', video_temp,
-                    '-i', audio_temp,
-                    '-c:v', 'copy',
-                    '-c:a', 'aac',
-                    '-y',
-                    output_file
-                ]
-                
-                result = subprocess.run(cmd, capture_output=True, text=True)
-                
-                # Remove arquivos temporários
-                if os.path.exists(video_temp):
-                    os.remove(video_temp)
-                if os.path.exists(audio_temp):
-                    os.remove(audio_temp)
-                
-                if result.returncode == 0:
-                    download_status[download_id] = {
-                        'status': 'concluido',
-                        'progress': 100,
-                        'message': f'Download HD {resolution} concluído!',
-                        'file_path': output_file
-                    }
-                else:
-                    raise Exception("Erro ao combinar vídeo e áudio")
-            else:
+            if not video_stream or not audio_stream:
                 raise Exception(f"Stream {resolution} não encontrado")
-                
+            
+            # Arquivos temporários
+            video_temp = os.path.join(DOWNLOAD_DIR, f"temp_video_{download_id}.mp4")
+            audio_temp = os.path.join(DOWNLOAD_DIR, f"temp_audio_{download_id}.mp4")
+            
+            # Download streams
+            download_status[download_id]['status'] = 'downloading_video'
+            video_stream.download(output_path=DOWNLOAD_DIR, filename=f"temp_video_{download_id}.mp4")
+            
+            download_status[download_id]['status'] = 'downloading_audio'
+            audio_stream.download(output_path=DOWNLOAD_DIR, filename=f"temp_audio_{download_id}.mp4")
+            
+            # Combina com FFmpeg
+            download_status[download_id]['status'] = 'processing'
+            filename = f"{safe_filename}_{resolution}.mp4"
+            filepath = os.path.join(DOWNLOAD_DIR, filename)
+            
+            ffmpeg_cmd = [
+                'ffmpeg', '-y',
+                '-i', video_temp,
+                '-i', audio_temp,
+                '-c', 'copy',
+                filepath
+            ]
+            
+            subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
+            
+            # Remove arquivos temporários
+            os.remove(video_temp)
+            os.remove(audio_temp)
+            
         else:
             # Download progressivo
-            download_status[download_id]['message'] = f'Baixando em {resolution}...'
-            
             stream = yt.streams.filter(progressive=True, file_extension='mp4', res=resolution).first()
-            if stream:
-                file_path = os.path.join(DOWNLOAD_FOLDER, f"{safe_filename}_{resolution}.mp4")
-                stream.download(output_path=DOWNLOAD_FOLDER, filename=f"{safe_filename}_{resolution}.mp4")
-                download_status[download_id] = {
-                    'status': 'concluido',
-                    'progress': 100,
-                    'message': f'Download {resolution} concluído!',
-                    'file_path': file_path
-                }
-            else:
+            if not stream:
                 raise Exception(f"Stream {resolution} não encontrado")
-                
+            
+            filename = f"{safe_filename}_{resolution}.mp4"
+            filepath = os.path.join(DOWNLOAD_DIR, filename)
+            
+            stream.download(output_path=DOWNLOAD_DIR, filename=filename)
+        
+        # Sucesso
+        download_status[download_id].update({
+            'status': 'completed',
+            'progress': 100,
+            'filename': filename,
+            'filepath': filepath
+        })
+        
     except Exception as e:
-        download_status[download_id] = {
-            'status': 'erro',
-            'progress': 0,
-            'message': f'Erro: {str(e)}',
-            'file_path': None
-        }
+        download_status[download_id].update({
+            'status': 'error',
+            'error': str(e)
+        })
 
-@app.route('/status/<download_id>')
+@app.route('/download_status/<download_id>')
 def get_download_status(download_id):
-    """Retorna o status do download"""
-    if download_id in download_status:
-        return jsonify(download_status[download_id])
-    else:
+    """Retorna status do download"""
+    if download_id not in download_status:
         return jsonify({'error': 'Download não encontrado'}), 404
+    
+    return jsonify(download_status[download_id])
 
 @app.route('/download_file/<download_id>')
 def download_file(download_id):
-    """Baixa o arquivo para o usuário"""
-    if download_id in download_status and download_status[download_id]['file_path']:
-        file_path = download_status[download_id]['file_path']
-        if os.path.exists(file_path):
-            return send_file(file_path, as_attachment=True)
-    return jsonify({'error': 'Arquivo não encontrado'}), 404
+    """Faz download do arquivo"""
+    if download_id not in download_status:
+        return jsonify({'error': 'Download não encontrado'}), 404
+    
+    status = download_status[download_id]
+    if status['status'] != 'completed':
+        return jsonify({'error': 'Download não concluído'}), 400
+    
+    filepath = status['filepath']
+    if not os.path.exists(filepath):
+        return jsonify({'error': 'Arquivo não encontrado'}), 404
+    
+    return send_file(filepath, as_attachment=True, download_name=status['filename'])
+
+# Limpeza automática de arquivos antigos (executar periodicamente)
+def cleanup_old_files():
+    """Remove arquivos antigos"""
+    try:
+        current_time = time.time()
+        for filename in os.listdir(DOWNLOAD_DIR):
+            filepath = os.path.join(DOWNLOAD_DIR, filename)
+            if os.path.isfile(filepath):
+                # Remove arquivos com mais de 1 hora
+                if current_time - os.path.getmtime(filepath) > 3600:
+                    os.remove(filepath)
+    except Exception as e:
+        print(f"Erro na limpeza: {e}")
+
+# Executar limpeza a cada 30 minutos
+def schedule_cleanup():
+    while True:
+        time.sleep(1800)  # 30 minutos
+        cleanup_old_files()
+
+# Inicia thread de limpeza
+cleanup_thread = threading.Thread(target=schedule_cleanup)
+cleanup_thread.daemon = True
+cleanup_thread.start()
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000) 
+    app.run(debug=True) 
