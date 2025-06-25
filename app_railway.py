@@ -8,6 +8,7 @@ import threading
 import time
 import subprocess
 import shutil
+import random
 
 app = Flask(__name__)
 
@@ -22,17 +23,67 @@ os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 download_status = {}
 
 def create_youtube_object(url):
-    """Cria objeto YouTube com configurações anti-bot"""
-    try:
-        # Primeira tentativa: com use_po_token
-        return YouTube(url, use_po_token=True)
-    except:
+    """Cria objeto YouTube com configurações anti-bot e múltiplas estratégias"""
+    # Lista de user agents para rotação
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15'
+    ]
+    
+    # Estratégias de tentativa
+    strategies = [
+        # Estratégia 1: Cliente WEB com user agent
+        lambda: YouTube(url, client='WEB', user_agent=random.choice(user_agents)),
+        
+        # Estratégia 2: Cliente ANDROID
+        lambda: YouTube(url, client='ANDROID'),
+        
+        # Estratégia 3: Cliente IOS
+        lambda: YouTube(url, client='IOS'),
+        
+        # Estratégia 4: Configuração padrão com user agent
+        lambda: YouTube(url, user_agent=random.choice(user_agents)),
+        
+        # Estratégia 5: Com use_po_token
+        lambda: YouTube(url, use_po_token=True, client='WEB'),
+        
+        # Estratégia 6: Configuração básica
+        lambda: YouTube(url),
+        
+        # Estratégia 7: Cliente TV_EMBED
+        lambda: YouTube(url, client='TV_EMBED'),
+        
+        # Estratégia 8: Cliente WEB_EMBED
+        lambda: YouTube(url, client='WEB_EMBED')
+    ]
+    
+    # Tenta cada estratégia
+    for i, strategy in enumerate(strategies):
         try:
-            # Segunda tentativa: sem po_token mas com client web
-            return YouTube(url, client='WEB')
-        except:
-            # Terceira tentativa: configuração padrão
-            return YouTube(url)
+            print(f"Tentando estratégia {i+1}/8...")
+            
+            # Adiciona delay para evitar rate limiting
+            if i > 0:
+                time.sleep(random.uniform(0.5, 2.0))
+            
+            yt = strategy()
+            
+            # Testa se consegue acessar propriedades básicas
+            _ = yt.title  # Força o carregamento dos dados
+            _ = yt.length
+            
+            print(f"✓ Sucesso com estratégia {i+1}")
+            return yt
+            
+        except Exception as e:
+            print(f"✗ Estratégia {i+1} falhou: {str(e)[:100]}")
+            continue
+    
+    # Se todas as estratégias falharam
+    raise Exception("Todas as estratégias falharam. YouTube pode estar bloqueando o acesso. Tente novamente em alguns minutos.")
 
 def check_ffmpeg():
     """Verifica se FFmpeg está disponível"""
@@ -73,56 +124,138 @@ def get_video_info():
         if not url:
             return jsonify({'error': 'URL é obrigatória'}), 400
         
-        # Cria objeto YouTube com anti-bot
+        # Validação básica da URL
+        if 'youtube.com' not in url and 'youtu.be' not in url:
+            return jsonify({'error': 'URL deve ser do YouTube'}), 400
+        
+        print(f"Processando URL: {url}")
+        
+        # Cria objeto YouTube com anti-bot e múltiplas estratégias
         yt = create_youtube_object(url)
+        
+        print("✓ Objeto YouTube criado com sucesso")
+        
+        # Obtém informações básicas com tratamento de erro individual
+        try:
+            title = yt.title
+            print(f"✓ Título obtido: {title[:50]}...")
+        except Exception as e:
+            print(f"✗ Erro ao obter título: {e}")
+            title = "Título não disponível"
+        
+        try:
+            author = yt.author
+            print(f"✓ Autor obtido: {author}")
+        except Exception as e:
+            print(f"✗ Erro ao obter autor: {e}")
+            author = "Autor não disponível"
+        
+        try:
+            length = yt.length
+            print(f"✓ Duração obtida: {length}s")
+        except Exception as e:
+            print(f"✗ Erro ao obter duração: {e}")
+            length = 0
+        
+        try:
+            thumbnail = yt.thumbnail_url
+            print("✓ Thumbnail obtida")
+        except Exception as e:
+            print(f"✗ Erro ao obter thumbnail: {e}")
+            thumbnail = ""
+        
+        try:
+            views = yt.views or 0
+            print(f"✓ Views obtidas: {views}")
+        except Exception as e:
+            print(f"✗ Erro ao obter views: {e}")
+            views = 0
+        
+        try:
+            description = yt.description or ""
+            print("✓ Descrição obtida")
+        except Exception as e:
+            print(f"✗ Erro ao obter descrição: {e}")
+            description = ""
         
         # Obtém informações básicas
         video_info = {
-            'title': yt.title,
-            'author': yt.author,
-            'length': yt.length,
-            'thumbnail': yt.thumbnail_url,
-            'views': yt.views,
-            'description': yt.description[:200] + '...' if len(yt.description or '') > 200 else yt.description
+            'title': title,
+            'author': author,
+            'length': length,
+            'thumbnail': thumbnail,
+            'views': views,
+            'description': description[:200] + '...' if len(description) > 200 else description
         }
+        
+        print("✓ Informações básicas coletadas")
         
         # Verifica se FFmpeg está disponível
         ffmpeg_available = check_ffmpeg()
+        print(f"FFmpeg disponível: {ffmpeg_available}")
         
         # Obtém streams disponíveis
         streams = []
         
-        if ffmpeg_available:
-            # Com FFmpeg: streams adaptivos (HD)
-            video_streams = yt.streams.filter(adaptive=True, file_extension='mp4', only_video=True).order_by('resolution').desc()
-            for stream in video_streams:
-                if stream.resolution in ['1080p', '720p', '480p', '360p']:
+        try:
+            if ffmpeg_available:
+                # Com FFmpeg: streams adaptivos (HD)
+                print("Buscando streams adaptivos...")
+                video_streams = yt.streams.filter(adaptive=True, file_extension='mp4', only_video=True).order_by('resolution').desc()
+                for stream in video_streams:
+                    if stream.resolution in ['1080p', '720p', '480p', '360p']:
+                        streams.append({
+                            'resolution': stream.resolution,
+                            'type': 'adaptive',
+                            'size': f"{stream.filesize / (1024*1024):.1f} MB" if stream.filesize else 'N/A',
+                            'quality': f"{stream.resolution} HD (Vídeo + Áudio)"
+                        })
+                print(f"✓ {len([s for s in streams if s['type'] == 'adaptive'])} streams adaptivos encontrados")
+            
+            # Streams progressivos (funcionam sem FFmpeg)
+            print("Buscando streams progressivos...")
+            progressive_streams = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc()
+            for stream in progressive_streams:
+                if stream.resolution:  # Só adiciona se tem resolução válida
                     streams.append({
                         'resolution': stream.resolution,
-                        'type': 'adaptive',
+                        'type': 'progressive',
                         'size': f"{stream.filesize / (1024*1024):.1f} MB" if stream.filesize else 'N/A',
-                        'quality': f"{stream.resolution} HD (Vídeo + Áudio)"
+                        'quality': f"{stream.resolution} (Vídeo + Áudio)"
                     })
+            print(f"✓ {len([s for s in streams if s['type'] == 'progressive'])} streams progressivos encontrados")
+            
+            # Stream de áudio apenas
+            print("Buscando stream de áudio...")
+            audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
+            if audio_stream:
+                streams.append({
+                    'resolution': 'audio',
+                    'type': 'audio',
+                    'size': f"{audio_stream.filesize / (1024*1024):.1f} MB" if audio_stream.filesize else 'N/A',
+                    'quality': f"Apenas Áudio ({audio_stream.abr})"
+                })
+                print("✓ Stream de áudio encontrado")
+            
+        except Exception as e:
+            print(f"✗ Erro ao obter streams: {e}")
+            # Fallback: pelo menos tenta obter um stream básico
+            try:
+                basic_stream = yt.streams.first()
+                if basic_stream:
+                    streams.append({
+                        'resolution': '360p',
+                        'type': 'basic',
+                        'size': 'N/A',
+                        'quality': 'Qualidade Básica'
+                    })
+            except:
+                pass
         
-        # Streams progressivos (funcionam sem FFmpeg)
-        progressive_streams = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc()
-        for stream in progressive_streams:
-            streams.append({
-                'resolution': stream.resolution,
-                'type': 'progressive',
-                'size': f"{stream.filesize / (1024*1024):.1f} MB" if stream.filesize else 'N/A',
-                'quality': f"{stream.resolution} (Vídeo + Áudio)"
-            })
+        if not streams:
+            return jsonify({'error': 'Nenhum stream disponível para este vídeo'}), 400
         
-        # Stream de áudio apenas
-        audio_stream = yt.streams.filter(only_audio=True).order_by('abr').desc().first()
-        if audio_stream:
-            streams.append({
-                'resolution': 'audio',
-                'type': 'audio',
-                'size': f"{audio_stream.filesize / (1024*1024):.1f} MB" if audio_stream.filesize else 'N/A',
-                'quality': f"Apenas Áudio ({audio_stream.abr})"
-            })
+        print(f"✓ Total de {len(streams)} streams disponíveis")
         
         return jsonify({
             'video_info': video_info,
@@ -131,7 +264,22 @@ def get_video_info():
         })
         
     except Exception as e:
-        return jsonify({'error': f'Erro ao obter informações do vídeo: {str(e)}'}), 400
+        error_message = str(e)
+        print(f"✗ Erro geral: {error_message}")
+        
+        # Mensagens de erro mais informativas
+        if "EOF when reading a line" in error_message:
+            error_message = "Erro de conexão com YouTube. Tente novamente em alguns minutos."
+        elif "Video unavailable" in error_message:
+            error_message = "Vídeo não disponível ou privado."
+        elif "regex_search" in error_message:
+            error_message = "Erro ao processar dados do YouTube. Pode ser um problema temporário."
+        elif "HTTP Error 429" in error_message:
+            error_message = "Muitas requisições. Aguarde alguns minutos antes de tentar novamente."
+        elif "all strategies failed" in error_message.lower():
+            error_message = "YouTube está bloqueando o acesso. Tente novamente em alguns minutos ou use uma VPN."
+        
+        return jsonify({'error': f'Erro ao obter informações do vídeo: {error_message}'}), 400
 
 @app.route('/start_download', methods=['POST'])
 def start_download():
